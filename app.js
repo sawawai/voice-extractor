@@ -30,7 +30,6 @@ const els = {
   progressStep: $("progressStep"),
   backendNote: $("backendNote"),
   downloadNote: $("downloadNote"),
-  engineNote: $("engineNote"),
   downloadBtn: $("downloadBtn"),
   resetBtn: $("resetBtn"),
   errorMsg: $("errorMsg"),
@@ -540,8 +539,7 @@ els.extractBtn.addEventListener("click", startExtraction);
 
 /* Demucs needs more memory than mobile browsers give a tab (iOS Safari
    kills the page mid-inference even on short clips), so phones/tablets
-   are warned up front and offered the lightweight centre-extract engine
-   instead of crashing unexpectedly. */
+   are shown a blocking notice at page load instead of the tool. */
 const IS_MOBILE = (() => {
   try {
     if (navigator.userAgentData && navigator.userAgentData.mobile) return true;
@@ -552,35 +550,12 @@ const IS_MOBILE = (() => {
   }
 })();
 
-let mobileAccepted = false; // asked once per visit, not per extraction
-
-function askMobileFallback() {
-  return new Promise((resolve) => {
-    const cont = $("mobileContinue");
-    const cancel = $("mobileCancel");
-    const done = (ok) => {
-      cont.removeEventListener("click", onCont);
-      cancel.removeEventListener("click", onCancel);
-      resolve(ok);
-    };
-    const onCont = () => done(true);
-    const onCancel = () => done(false);
-    cont.addEventListener("click", onCont);
-    cancel.addEventListener("click", onCancel);
-    setPanel("mobile");
-  });
-}
-
 async function startExtraction() {
   if (players.preview.isTrimming()) { // unapplied selection is not extracted
     players.preview.cancelTrim();
     syncTrimUI();
   }
   players.preview.audio.pause();
-  if (IS_MOBILE && !mobileAccepted) {
-    if (!(await askMobileFallback())) { setPanel("ready"); return; }
-    mobileAccepted = true;
-  }
   // the format is now actually being used — make it the default for next visit
   try { localStorage.setItem("voiceext:format", getFormat()); } catch { /* ignore */ }
   setPanel("work");
@@ -588,7 +563,6 @@ async function startExtraction() {
   els.workStatus.textContent = "音声を読み込んでいます…";
   els.backendNote.textContent = "";
   els.downloadNote.textContent = "";
-  els.engineNote.textContent = "";
   els.doneNote.textContent = "";
 
   try {
@@ -660,10 +634,6 @@ function uiHooks() {
         els.downloadNote.textContent = `モデルをダウンロード中… ${mb} MB（初回のみ）`;
       }
     },
-    note: (text) => { els.engineNote.textContent = text; },
-    engine: (name) => {
-      els.engineNote.textContent = name === "center-extract" ? "簡易モードで処理しています" : "";
-    },
   };
 }
 
@@ -674,17 +644,11 @@ function uiHooks() {
 // drivers — fall back to WASM automatically instead of shipping garbled audio.
 async function runInference(channels, sampleRate) {
   const hooks = uiHooks();
-  if (IS_MOBILE) {
-    // never attempt Demucs here — even the WebGPU path needs ~250MB+ of
-    // buffers, past what mobile browsers allow before killing the tab
-    els.backendNote.textContent = "モバイル端末では簡易モードのみ利用できます";
-    return runSeparation(channels, sampleRate, "fast", hooks, {});
-  }
   // definitive only now — detection alone can't tell (e.g. Firefox detects
   // WebGPU but fails the correctness probe and runs on CPU)
   if (await verifyWebGPU(hooks)) {
     els.backendNote.textContent = "WebGPU（GPU）で処理しています";
-    return runSeparation(channels, sampleRate, "quality", hooks, { backend: "webgpu" });
+    return runSeparation(channels, sampleRate, hooks, { backend: "webgpu" });
   }
   els.backendNote.textContent = "CPU で処理しています（WebGPU が利用できないため、時間がかかります）";
   return runInWorker(channels, sampleRate, hooks);
@@ -698,8 +662,6 @@ function runInWorker(channels, sampleRate, hooks) {
       if (m.type === "status") hooks.status(m.text);
       else if (m.type === "progress") hooks.progress(m.value, m.seg, m.total);
       else if (m.type === "download") hooks.download(m.loaded, m.total);
-      else if (m.type === "note") hooks.note(m.text);
-      else if (m.type === "engine") hooks.engine(m.name);
       else if (m.type === "done") {
         worker.terminate();
         resolve({ left: new Float32Array(m.left), right: m.right ? new Float32Array(m.right) : null });
@@ -962,4 +924,6 @@ try {
   if (localStorage.getItem("voiceext:format") === "mp3") setFormat("mp3");
 } catch { /* no localStorage */ }
 
-setPanel("idle");
+// mobile browsers can't run the separation model (per-tab memory limits kill
+// the page mid-inference) — show the notice instead of the tool
+setPanel(IS_MOBILE ? "mobile" : "idle");

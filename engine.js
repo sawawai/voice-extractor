@@ -12,8 +12,8 @@
    correctness probe (no UA sniffing); the worker calls this with
    { backend: 'wasm' }.
 
-   runSeparation(channels, sampleRate, mode, hooks, { backend })
-     hooks = { progress, download, status, note, engine }
+   runSeparation(channels, sampleRate, hooks, { backend })
+     hooks = { progress, download, status }
      -> { left: Float32Array, right: Float32Array | null }
 
    Dev overrides (URL params): ?webgpu=off  force WASM
@@ -48,8 +48,6 @@ const MODEL_FP32 = "./models/htdemucs_embedded.onnx";        // ~172MB
 const MODEL_FP16 = "./models/htdemucs_embedded_fp16.onnx";   // ~86MB
 
 const MODEL_CACHE = "voice-model-v1";
-const FFT_SIZE = 4096;
-const HOP = FFT_SIZE / 4;
 
 function abs(url) { return new URL(url, self.location.href).href; }
 
@@ -90,7 +88,7 @@ export async function verifyWebGPU(hooks) {
     hooks.status("初回のみ：GPU が正しく計算できるか確認しています…");
     const refBuf = await fetchModelCached(abs(PROBE_REF_URL), hooks);
     const sig = makeProbeSignal(PROBE_SAMPLES);
-    const quiet = { ...hooks, progress: () => {}, engine: () => {} };
+    const quiet = { ...hooks, progress: () => {} };
     const res = await runDemucs([sig.left, sig.right], quiet, "webgpu");
     const { ok, relErr } = compareProbe(res.left, res.right || res.left, new Float32Array(refBuf));
     console.info(`[webgpu probe] relErr=${relErr.toFixed(4)} -> ${ok ? "ok" : "wasm fallback"}`);
@@ -121,20 +119,9 @@ async function adapterKey() {
 }
 
 /* ---------- public entry ---------- */
-export async function runSeparation(channels, sampleRate, mode, hooks, opts = {}) {
+export async function runSeparation(channels, sampleRate, hooks, opts = {}) {
   const backend = opts.backend || "wasm";
-  if (mode === "fast") {
-    hooks.engine("center-extract");
-    return centerExtract(channels, hooks);
-  }
-  try {
-    hooks.engine("demucs");
-    return await runDemucs(channels, hooks, backend);
-  } catch (err) {
-    hooks.note("Demucs を利用できません。簡易エンジンに切り替えます（" + String((err && err.message) || err) + "）");
-    hooks.engine("center-extract");
-    return centerExtract(channels, hooks);
-  }
+  return runDemucs(channels, hooks, backend);
 }
 
 /* ---------- ORT / demucs-web loading ---------- */
@@ -300,118 +287,3 @@ async function fetchModelCached(url, hooks) {
   throw new Error("モデルのダウンロードに失敗しました: " + String((lastErr && lastErr.message) || lastErr));
 }
 
-/* ============================================================
-   centerExtract — STFT soft-mask centre isolation (fallback)
-   ============================================================ */
-async function centerExtract(channels, hooks) {
-  const L = channels[0];
-  const R = channels[1] || channels[0];
-  const N = L.length;
-
-  const win = hann(FFT_SIZE);
-  const out = new Float32Array(N);
-  const norm = new Float32Array(N);
-
-  const fft = new FFT(FFT_SIZE);
-  const midRe = new Float32Array(FFT_SIZE), midIm = new Float32Array(FFT_SIZE);
-  const sideRe = new Float32Array(FFT_SIZE), sideIm = new Float32Array(FFT_SIZE);
-  const half = FFT_SIZE / 2;
-  const eps = 1e-9;
-
-  const frames = Math.ceil((N + FFT_SIZE) / HOP);
-  let frame = 0, lastReport = -1;
-
-  for (let start = -FFT_SIZE; start < N; start += HOP, frame++) {
-    for (let i = 0; i < FFT_SIZE; i++) {
-      const idx = start + i;
-      let l = 0, r = 0;
-      if (idx >= 0 && idx < N) { l = L[idx]; r = R[idx]; }
-      const w = win[i];
-      midRe[i] = 0.5 * (l + r) * w;
-      sideRe[i] = 0.5 * (l - r) * w;
-      midIm[i] = 0; sideIm[i] = 0;
-    }
-
-    fft.forward(midRe, midIm);
-    fft.forward(sideRe, sideIm);
-
-    for (let k = 0; k <= half; k++) {
-      const m2 = midRe[k] * midRe[k] + midIm[k] * midIm[k];
-      const s2 = sideRe[k] * sideRe[k] + sideIm[k] * sideIm[k];
-      let mask = m2 / (m2 + s2 + eps);
-      mask = mask * mask;
-      midRe[k] *= mask; midIm[k] *= mask;
-      if (k > 0 && k < half) { const j = FFT_SIZE - k; midRe[j] = midRe[k]; midIm[j] = -midIm[k]; }
-    }
-
-    fft.inverse(midRe, midIm);
-
-    for (let i = 0; i < FFT_SIZE; i++) {
-      const idx = start + i;
-      if (idx < 0 || idx >= N) continue;
-      const w = win[i];
-      out[idx] += midRe[i] * w;
-      norm[idx] += w * w;
-    }
-
-    if (frame % 8 === 0) {
-      const p = Math.min(0.99, frame / frames);
-      if (p - lastReport > 0.01) { hooks.progress(p); lastReport = p; await tick(); }
-    }
-  }
-
-  for (let i = 0; i < N; i++) out[i] = norm[i] > eps ? out[i] / norm[i] : 0;
-  hooks.progress(1);
-  return { left: out, right: null };
-}
-
-/* ---------- helpers ---------- */
-function hann(n) {
-  const w = new Float32Array(n);
-  for (let i = 0; i < n; i++) w[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / n);
-  return w;
-}
-function tick() { return new Promise((r) => setTimeout(r, 0)); }
-
-/* ---------- compact radix-2 FFT (in-place) ---------- */
-class FFT {
-  constructor(n) {
-    this.n = n;
-    this.rev = new Uint32Array(n);
-    const bits = Math.log2(n);
-    for (let i = 0; i < n; i++) {
-      let x = i, y = 0;
-      for (let b = 0; b < bits; b++) { y = (y << 1) | (x & 1); x >>= 1; }
-      this.rev[i] = y;
-    }
-    this.cos = new Float32Array(n / 2);
-    this.sin = new Float32Array(n / 2);
-    for (let i = 0; i < n / 2; i++) {
-      this.cos[i] = Math.cos((-2 * Math.PI * i) / n);
-      this.sin[i] = Math.sin((-2 * Math.PI * i) / n);
-    }
-  }
-  _transform(re, im, inv) {
-    const n = this.n, rev = this.rev;
-    for (let i = 0; i < n; i++) {
-      const j = rev[i];
-      if (j > i) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; }
-    }
-    for (let size = 2; size <= n; size <<= 1) {
-      const half = size >> 1, step = n / size;
-      for (let i = 0; i < n; i += size) {
-        for (let j = i, k = 0; j < i + half; j++, k += step) {
-          let wr = this.cos[k], wi = this.sin[k];
-          if (inv) wi = -wi;
-          const a = j, b = j + half;
-          const tr = re[b] * wr - im[b] * wi;
-          const ti = re[b] * wi + im[b] * wr;
-          re[b] = re[a] - tr; im[b] = im[a] - ti;
-          re[a] += tr; im[a] += ti;
-        }
-      }
-    }
-  }
-  forward(re, im) { this._transform(re, im, false); }
-  inverse(re, im) { this._transform(re, im, true); const n = this.n; for (let i = 0; i < n; i++) { re[i] /= n; im[i] /= n; } }
-}

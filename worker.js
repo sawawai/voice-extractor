@@ -15,12 +15,10 @@ self.onmessage = async (e) => {
     status: (text) => postMessage({ type: "status", text }),
     progress: (value, seg, total) => postMessage({ type: "progress", value, seg, total }),
     download: (loaded, total) => postMessage({ type: "download", loaded, total }),
-    note: (text) => postMessage({ type: "note", text }),
-    engine: (name) => postMessage({ type: "engine", name }),
   };
 
   try {
-    const res = await runSeparation(msg.channels, msg.sampleRate, "quality", hooks, { backend: "wasm" });
+    const res = await runSeparation(msg.channels, msg.sampleRate, hooks, { backend: "wasm" });
     const transfer = [res.left.buffer];
     if (res.right && res.right.buffer !== res.left.buffer) transfer.push(res.right.buffer);
     postMessage({ type: "done", left: res.left, right: res.right || null }, transfer);
