@@ -262,7 +262,13 @@ async function fetchModelCached(url, hooks) {
       const resp = await fetch(url);
       if (!resp.ok) throw new Error("HTTP " + resp.status);
 
-      const total = Number(resp.headers.get("content-length")) || 0;
+      // When the host compresses the response (gzip/br), content-length is
+      // the compressed transfer size but the reader yields decompressed
+      // bytes — the % would run past 100. Treat the size as unknown then.
+      const enc = resp.headers.get("content-encoding");
+      const total = enc && enc !== "identity"
+        ? 0
+        : Number(resp.headers.get("content-length")) || 0;
       const reader = resp.body.getReader();
       const chunks = [];
       let received = 0;

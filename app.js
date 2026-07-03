@@ -538,12 +538,49 @@ els.clearFile.addEventListener("click", resetAll);
 /* ---------- extraction ---------- */
 els.extractBtn.addEventListener("click", startExtraction);
 
+/* Demucs needs more memory than mobile browsers give a tab (iOS Safari
+   kills the page mid-inference even on short clips), so phones/tablets
+   are warned up front and offered the lightweight centre-extract engine
+   instead of crashing unexpectedly. */
+const IS_MOBILE = (() => {
+  try {
+    if (navigator.userAgentData && navigator.userAgentData.mobile) return true;
+    if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) return true;
+    return /Mac/.test(navigator.userAgent) && navigator.maxTouchPoints > 1; // iPadOS reports as macOS
+  } catch {
+    return false;
+  }
+})();
+
+let mobileAccepted = false; // asked once per visit, not per extraction
+
+function askMobileFallback() {
+  return new Promise((resolve) => {
+    const cont = $("mobileContinue");
+    const cancel = $("mobileCancel");
+    const done = (ok) => {
+      cont.removeEventListener("click", onCont);
+      cancel.removeEventListener("click", onCancel);
+      resolve(ok);
+    };
+    const onCont = () => done(true);
+    const onCancel = () => done(false);
+    cont.addEventListener("click", onCont);
+    cancel.addEventListener("click", onCancel);
+    setPanel("mobile");
+  });
+}
+
 async function startExtraction() {
   if (players.preview.isTrimming()) { // unapplied selection is not extracted
     players.preview.cancelTrim();
     syncTrimUI();
   }
   players.preview.audio.pause();
+  if (IS_MOBILE && !mobileAccepted) {
+    if (!(await askMobileFallback())) { setPanel("ready"); return; }
+    mobileAccepted = true;
+  }
   // the format is now actually being used — make it the default for next visit
   try { localStorage.setItem("voiceext:format", getFormat()); } catch { /* ignore */ }
   setPanel("work");
@@ -614,7 +651,9 @@ function uiHooks() {
     },
     download: (loaded, total) => {
       const mb = (loaded / 1048576).toFixed(0);
-      if (total) {
+      // loaded can pass total if a proxy reports a stale/compressed size —
+      // drop to the size-unknown display instead of showing >100%
+      if (total && loaded <= total) {
         const pct = Math.round((loaded / total) * 100);
         els.downloadNote.textContent = `モデルをダウンロード中… ${pct}%（${mb} / ${(total / 1048576).toFixed(0)} MB・初回のみ）`;
       } else {
@@ -635,6 +674,12 @@ function uiHooks() {
 // drivers — fall back to WASM automatically instead of shipping garbled audio.
 async function runInference(channels, sampleRate) {
   const hooks = uiHooks();
+  if (IS_MOBILE) {
+    // never attempt Demucs here — even the WebGPU path needs ~250MB+ of
+    // buffers, past what mobile browsers allow before killing the tab
+    els.backendNote.textContent = "モバイル端末では簡易モードのみ利用できます";
+    return runSeparation(channels, sampleRate, "fast", hooks, {});
+  }
   // definitive only now — detection alone can't tell (e.g. Firefox detects
   // WebGPU but fails the correctness probe and runs on CPU)
   if (await verifyWebGPU(hooks)) {

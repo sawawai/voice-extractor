@@ -57,6 +57,7 @@
           <li>初回のみ音声分離モデル（約85MB）をダウンロードします。2回目以降は不要です。</li>
           <li>分離の精度には限界があり、音源によってはうまく抽出できないことがあります。</li>
           <li>WebGPU 対応ブラウザでは GPU で高速に処理され、非対応の場合は CPU で時間がかかります。</li>
+          <li>スマートフォン・タブレットではメモリの制約により、精度の低い簡易モードのみ利用できます。</li>
           <li>長時間の音声はメモリ不足で失敗することがあります。範囲を切り出してお試しください。</li>
         </ul>
       </section>
@@ -185,6 +186,19 @@
         <button class="btn btn--ghost" id="resetBtn">別のファイルを抽出</button>
       </div>
       <p class="done__note" id="doneNote"></p>
+    </section>
+
+    <!-- ───────────── MOBILE WARNING ─────────────
+         Demucs inference exceeds mobile browsers' per-tab memory limits
+         (iOS Safari kills the page mid-run), so phones/tablets are offered
+         the lightweight centre-extract engine instead. -->
+    <section class="panel" data-panel="mobile" hidden>
+      <p class="error__title">モバイル端末では完全な処理ができません</p>
+      <p class="error__msg">AI による音声分離は大量のメモリを使うため、スマートフォンやタブレットではブラウザが強制終了することがあります。かわりに軽量な簡易モードで処理できます（音楽・効果音の除去精度は下がります）。</p>
+      <div class="actions">
+        <button class="btn btn--primary" id="mobileContinue">簡易モードで続行</button>
+        <button class="btn btn--ghost" id="mobileCancel">中止</button>
+      </div>
     </section>
 
     <!-- ───────────── ERROR ───────────── -->
