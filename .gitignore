@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# onnxruntime-web dist, copied locally by scripts/fetch-ort.mjs
+ort/
+
+# Local dev tooling
+dev-server.mjs
+.claude/
+
+# Model conversion scripts (one-off build tooling, see models/README.md)
+scripts/convert_fp16.py
+scripts/convert_external_fp16.py
+
+# Embedded models: build input / legacy fallback, not deployed
+models/htdemucs_embedded.onnx
+models/htdemucs_embedded_fp16.onnx
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini

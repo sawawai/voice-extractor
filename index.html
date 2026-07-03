@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>音声抽出</title>
+<meta name="description" content="音声ファイルから音楽・効果音を取り除いて声だけを取り出します。すべてブラウザ内で完結。" />
+
+<!-- NOTE: coi-serviceworker (COEP) intentionally removed. It re-streamed every
+     fetch and broke the large model download. We self-host the model and fetch
+     it ourselves; WebGPU needs no COEP, and WASM falls back to single-thread.
+     app.js unregisters any leftover service worker on load. -->
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet" />
+
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<div class="page">
+
+  <header class="head">
+    <h1 class="head__title">音声抽出</h1>
+    <p class="head__tagline">音声ファイルから音楽・効果音を取り除いて声だけを取り出します</p>
+  </header>
+
+  <main class="stage" id="stage" data-state="idle">
+
+    <!-- ───────────── IDLE / DROP ───────────── -->
+    <section class="panel" data-panel="idle">
+      <label class="dropzone" id="dropzone" for="fileInput" tabindex="0">
+        <svg class="dropzone__icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 16V5m0 0l-4.5 4.5M12 5l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M4 19h16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+        <span class="dropzone__title">音声・動画ファイルをドロップ、またはクリックして選択</span>
+        <span class="dropzone__hint">MP3 / WAV / M4A / FLAC / OGG ・ MP4 / WEBM など</span>
+        <input type="file" id="fileInput" accept="audio/*,video/*,.wav,.mp3,.m4a,.flac,.ogg,.oga,.aac,.opus,.weba,.mp4,.m4v,.webm,.mov,.mkv" hidden />
+      </label>
+
+      <section class="idle__block">
+        <h2 class="idle__heading">使い方</h2>
+        <ol class="idle__steps">
+          <li>音声ファイルまたは動画ファイルを読み込みます。動画は音声トラックが自動で使われます。</li>
+          <li>確認再生で内容を確かめてから「抽出する」を押します。範囲を切り出すと処理が速くなります。</li>
+          <li>処理が終わるまでタブを閉じずにお待ちください。進み具合は画面に表示されます。</li>
+          <li>抽出した声を元の音声と聴き比べて、ダウンロードします。続けて別のファイルも処理できます。</li>
+        </ol>
+      </section>
+
+      <section class="idle__block">
+        <h2 class="idle__heading">ご注意</h2>
+        <ul class="idle__notes">
+          <li>処理はすべてブラウザ内で行われ、読み込んだファイルが外部に送信されることはありません。</li>
+          <li>初回のみ音声分離モデル（約85MB）をダウンロードします。2回目以降は不要です。</li>
+          <li>分離の精度には限界があり、音源によってはうまく抽出できないことがあります。</li>
+          <li>WebGPU 対応ブラウザでは GPU で高速に処理され、非対応の場合は CPU で時間がかかります。</li>
+          <li>長時間の音声はメモリ不足で失敗することがあります。範囲を切り出してお試しください。</li>
+        </ul>
+      </section>
+    </section>
+
+    <!-- ───────────── LOADED / READY ───────────── -->
+    <section class="panel" data-panel="ready" hidden>
+      <div class="filecard">
+        <div class="filecard__meta">
+          <p class="filecard__name" id="fileName">—</p>
+          <p class="filecard__info" id="fileInfo">—</p>
+        </div>
+        <button class="iconbtn" id="clearFile" title="取り消す" aria-label="取り消す">✕</button>
+      </div>
+
+      <div class="track">
+        <p class="track__label">確認再生</p>
+        <div class="player" id="playerPreview">
+          <button class="player__btn" aria-label="再生 / 一時停止">
+            <svg class="ic-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+            <svg class="ic-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+          </button>
+          <canvas class="player__wave"></canvas>
+          <span class="player__time">0:00</span>
+          <audio id="audioPreview" preload="metadata"></audio>
+        </div>
+        <div class="trimbar">
+          <span class="trimbar__info" id="trimInfo"></span>
+          <span class="trimbar__btns">
+            <button class="minibtn" id="trimClear" type="button" hidden>切り出しを解除</button>
+            <button class="minibtn" id="trimStart" type="button">範囲を切り出す</button>
+            <button class="minibtn" id="trimCancel" type="button" hidden>キャンセル</button>
+            <button class="minibtn minibtn--apply" id="trimApply" type="button" hidden>適用</button>
+          </span>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btn btn--primary" id="extractBtn">抽出する</button>
+        <div class="fmt">
+          <span class="fmt__label" id="fmtLabel">出力形式</span>
+          <div class="seg" id="optFormat" role="radiogroup" aria-labelledby="fmtLabel">
+            <button type="button" class="seg__btn is-on" data-value="wav" title="無圧縮・最高品質" aria-pressed="true">WAV</button>
+            <button type="button" class="seg__btn" data-value="mp3" title="192kbps・小さいファイル" aria-pressed="false">MP3</button>
+          </div>
+        </div>
+      </div>
+
+      <details class="advanced">
+        <summary>詳細設定</summary>
+        <div class="advanced__body">
+          <label class="opt">
+            <input type="checkbox" id="optNormalize" checked />
+            <span class="opt__text">
+              音量を自動で整える
+              <em>抽出後の声を聞き取りやすい音量に補正します</em>
+            </span>
+          </label>
+          <label class="opt">
+            <input type="checkbox" id="optMono" checked />
+            <span class="opt__text">
+              モノラルで書き出す
+              <em>セリフ用途に最適。ファイルサイズも小さくなります</em>
+            </span>
+          </label>
+          <label class="opt">
+            <input type="checkbox" id="optHighpass" checked />
+            <span class="opt__text">
+              超低域ノイズを取り除く
+              <em>DCオフセットや約30Hz以下の振動ノイズをカットします</em>
+            </span>
+          </label>
+        </div>
+      </details>
+    </section>
+
+    <!-- ───────────── PROCESSING ─────────────
+         No looping animations here: WebGPU inference runs on the main
+         thread and stalls it in bursts, which makes continuous motion
+         stutter. Everything below only changes when progress updates. -->
+    <section class="panel" data-panel="work" hidden>
+      <p class="work__status" id="workStatus">声を抽出しています…</p>
+      <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progressBar">
+        <div class="progress__fill" id="progressFill"></div>
+      </div>
+      <p class="work__pct">
+        <span class="work__pct-num"><span id="progressPct">0</span><small>%</small></span>
+        <span class="work__step" id="progressStep"></span>
+      </p>
+      <p class="work__note" id="backendNote"></p>
+      <p class="work__note" id="downloadNote"></p>
+      <p class="work__note" id="engineNote"></p>
+    </section>
+
+    <!-- ───────────── DONE ───────────── -->
+    <section class="panel" data-panel="done" hidden>
+      <p class="done__title">抽出が完了しました</p>
+
+      <div class="track track--result">
+        <p class="track__label">抽出した声</p>
+        <div class="player" id="playerOut">
+          <button class="player__btn" aria-label="再生 / 一時停止">
+            <svg class="ic-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+            <svg class="ic-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+          </button>
+          <canvas class="player__wave"></canvas>
+          <span class="player__time">0:00</span>
+          <audio id="audioOut" preload="auto"></audio>
+        </div>
+      </div>
+      <div class="track">
+        <p class="track__label">元の音声（比較用）</p>
+        <div class="player" id="playerCompare">
+          <button class="player__btn" aria-label="再生 / 一時停止">
+            <svg class="ic-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+            <svg class="ic-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+          </button>
+          <canvas class="player__wave"></canvas>
+          <span class="player__time">0:00</span>
+          <audio id="audioCompare" preload="metadata"></audio>
+        </div>
+      </div>
+
+      <div class="actions">
+        <a class="btn btn--primary" id="downloadBtn" download>ダウンロード</a>
+        <button class="btn btn--ghost" id="resetBtn">別のファイルを抽出</button>
+      </div>
+      <p class="done__note" id="doneNote"></p>
+    </section>
+
+    <!-- ───────────── ERROR ───────────── -->
+    <section class="panel" data-panel="error" hidden>
+      <p class="error__title">うまく処理できませんでした</p>
+      <p class="error__msg" id="errorMsg">—</p>
+      <div class="actions">
+        <button class="btn btn--ghost" id="errorReset">最初からやり直す</button>
+      </div>
+    </section>
+
+  </main>
+
+</div>
+
+<script src="app.js" type="module"></script>
+</body>
+</html>

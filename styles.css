@@ -1,0 +1,419 @@
+/* ============================================================
+   音声抽出 — plain Japanese document/stationery styling.
+   Warm paper, sumi ink, one 朱 (vermilion) accent. Top-anchored
+   single column like a printed sheet — a tool, not a landing page.
+   Mono digits for technical values. No looping animations: WebGPU
+   inference blocks the main thread in bursts, so nothing on the
+   processing screen moves on its own.
+
+   Everything is sized in rem off a fluid root font-size, so the
+   whole sheet scales up on large displays (~14px @ 1366w → ~17.5px
+   @ 2560w) without any layout changes.
+   ============================================================ */
+
+:root {
+  --paper:    #f7f5f0;
+  --surface:  #fffefb;
+  --ink:      #201e1a;
+  --ink-2:    #5c5850;
+  --ink-3:    #8d8880;
+  --line:     #ddd8cd;
+  --line-2:   #c8c2b4;
+  --accent:   #bc3f1d;   /* 朱 — progress, focus, waveform, marks */
+  --accent-2: #9e3315;
+  --accent-bg:#f7e9e2;
+  --wave:     #d9d4c8;   /* unplayed waveform bars */
+
+  --sans: "Noto Sans JP", system-ui, sans-serif;
+  --mono: "Roboto Mono", ui-monospace, monospace; /* plain zero — no dot/slash */
+
+  --r: 0.36rem;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html {
+  -webkit-text-size-adjust: 100%;
+  color-scheme: light;
+  font-size: clamp(13.5px, 10.6px + 0.25vw, 17.5px);
+}
+
+body {
+  min-height: 100dvh;
+  font-family: var(--sans);
+  font-size: 1rem;
+  line-height: 1.7;
+  color: var(--ink);
+  background: var(--paper);
+  border-top: 3px solid var(--accent);  /* document header band */
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.page {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: clamp(2.2rem, 6vh, 4rem) 1.7rem 5rem;
+}
+
+/* ---------- head ---------- */
+.head__title {
+  font-weight: 700;
+  font-size: 2.15rem;
+  line-height: 1.3;
+  letter-spacing: .06em;
+}
+.head__tagline {
+  margin-top: 0.4rem;
+  font-size: 1rem;
+  color: var(--ink-2);
+}
+
+/* ---------- stage ---------- */
+.stage {
+  margin-top: 1.6rem;
+  padding-top: 2rem;
+  border-top: 1px solid var(--line);
+}
+.panel[hidden] { display: none; }
+
+/* ---------- dropzone ---------- */
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  text-align: center;
+  background: var(--surface);
+  border: 1.5px dashed var(--line-2);
+  border-radius: var(--r);
+  padding: 3.3rem 1.7rem;
+  cursor: pointer;
+  transition: border-color .15s ease, background-color .15s ease;
+}
+.dropzone:hover, .dropzone:focus-visible, .dropzone.is-drag {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+.dropzone.is-drag { border-style: solid; }
+.dropzone__icon {
+  width: 1.9rem; height: 1.9rem;
+  color: var(--ink-3);
+  margin-bottom: 0.55rem;
+}
+.dropzone:hover .dropzone__icon, .dropzone.is-drag .dropzone__icon { color: var(--accent); }
+.dropzone__title { font-size: 1.05rem; font-weight: 500; }
+.dropzone__hint { font-family: var(--mono); font-size: 0.82rem; color: var(--ink-3); }
+
+/* instructions + fine print below the dropzone — gone once a file is loaded */
+.idle__block { margin-top: 1.7rem; }
+.idle__heading {
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: var(--ink-2);
+  margin-bottom: 0.4rem;
+}
+.idle__steps,
+.idle__notes {
+  list-style: none;
+  font-size: 0.9rem;
+  line-height: 1.75;
+  color: var(--ink-3);
+}
+.idle__steps { counter-reset: step; }
+.idle__steps li {
+  counter-increment: step;
+  padding-left: 1.5em;
+  text-indent: -1.5em;
+}
+.idle__steps li::before {
+  content: counter(step) ".";
+  font-family: var(--mono);
+  color: var(--ink-2);
+  margin-right: 0.55em;
+}
+.idle__notes li { padding-left: 1.1em; text-indent: -1.1em; }
+.idle__notes li::before { content: "・"; }
+
+/* ---------- file card ---------- */
+.filecard {
+  display: flex; align-items: center; gap: 1rem;
+  padding: 0.85rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+.filecard__meta { min-width: 0; flex: 1; }
+.filecard__name {
+  font-size: 1rem; font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.filecard__info { font-family: var(--mono); font-size: 0.82rem; color: var(--ink-3); }
+.iconbtn {
+  flex: none;
+  width: 2.15rem; height: 2.15rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: none;
+  color: var(--ink-3);
+  font-size: 0.93rem;
+  cursor: pointer;
+  transition: color .15s ease, border-color .15s ease;
+}
+.iconbtn:hover { color: var(--accent-2); border-color: var(--line-2); }
+
+/* ---------- labelled audio rows + waveform player ---------- */
+.track { margin-top: 1.3rem; }
+.track__label {
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: var(--ink-2);
+  margin-bottom: 0.4rem;
+}
+/* trim controls under the preview player */
+.trimbar {
+  margin-top: 0.5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  min-height: 1.8rem;
+}
+.trimbar__info {
+  font-family: var(--mono);
+  font-size: 0.79rem;
+  color: var(--ink-3);
+}
+.trimbar__info.is-active { color: var(--accent-2); }
+.trimbar__btns { display: flex; gap: 0.5rem; flex: none; }
+.minibtn {
+  font-family: var(--sans);
+  font-size: 0.82rem;
+  padding: 0.28rem 0.8rem;
+  background: none;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r);
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: color .15s ease, border-color .15s ease, background-color .15s ease;
+}
+.minibtn:hover { border-color: var(--ink-3); color: var(--ink); }
+.minibtn:disabled { opacity: .45; pointer-events: none; }
+.minibtn--apply { border-color: var(--accent); color: var(--accent-2); }
+.minibtn--apply:hover { background: var(--accent-bg); }
+.minibtn[hidden] { display: none; }
+/* 範囲を切り出す ↔ キャンセル+適用 swap in place: fixed widths so the trim
+   button's edges line up exactly with cancel's left and apply's right
+   (5.9rem + 0.5rem gap + 5.9rem = 12.3rem) */
+#trimStart { width: 12.3rem; }
+#trimCancel, #trimApply { width: 5.9rem; }
+.track--result .track__label { color: var(--accent-2); }
+.track--result .player { border-left: 3px solid var(--accent); } /* 朱 margin mark on the result */
+
+.player {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.55rem 0.7rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+.player audio { display: none; }
+.player__btn {
+  flex: none;
+  width: 2.6rem; height: 2.6rem;
+  display: grid; place-items: center;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r);
+  background: none;
+  color: var(--ink);
+  cursor: pointer;
+  transition: border-color .15s ease, color .15s ease, background-color .15s ease;
+}
+.player__btn:hover { border-color: var(--accent); color: var(--accent-2); }
+.player__btn:disabled { opacity: .45; pointer-events: none; }
+.player__btn svg { width: 1.1rem; height: 1.1rem; fill: currentColor; }
+.player .ic-pause { display: none; }
+.player.is-playing .ic-play { display: none; }
+.player.is-playing .ic-pause { display: block; }
+.player__wave {
+  flex: 1;
+  min-width: 0;
+  height: 3.2rem;
+  display: block;
+  cursor: pointer;
+}
+/* (decode-in-progress placeholder is drawn on the canvas itself, as
+   quiet waveform bars with a soft sweep — see drawLoadingFrame) */
+.player__time {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  color: var(--ink-3);
+  min-width: 6.8em;
+  text-align: right;
+}
+
+/* ---------- buttons ---------- */
+.actions {
+  margin-top: 1.7rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+}
+.btn {
+  display: inline-block;
+  padding: 0.72rem 1.7rem;
+  font-family: var(--sans);
+  font-size: 1rem;
+  font-weight: 500;
+  line-height: 1.5;
+  border-radius: var(--r);
+  border: 1px solid transparent;
+  cursor: pointer;
+  text-decoration: none;
+  text-align: center;
+  transition: background-color .15s ease, border-color .15s ease, color .15s ease;
+}
+.btn--primary {
+  background: var(--ink);
+  color: var(--paper);
+}
+.btn--primary:hover { background: #000; }
+.btn--ghost {
+  background: none;
+  border-color: var(--line-2);
+  color: var(--ink-2);
+}
+.btn--ghost:hover { border-color: var(--ink-3); color: var(--ink); }
+
+/* output format picker (next to 抽出する) */
+.fmt {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+.fmt__label { font-size: 0.86rem; color: var(--ink-3); }
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r);
+  overflow: hidden;
+  background: var(--surface);
+}
+.seg__btn {
+  font-family: var(--sans);
+  font-size: 0.9rem;
+  padding: 0.48rem 1rem;
+  border: none;
+  background: none;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: color .15s ease, background-color .15s ease;
+}
+.seg__btn + .seg__btn { border-left: 1px solid var(--line-2); }
+.seg__btn:hover { color: var(--ink); }
+.seg__btn.is-on { background: var(--ink); color: var(--paper); }
+
+/* ---------- advanced settings ---------- */
+.advanced {
+  margin-top: 1.9rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.85rem;
+}
+.advanced summary {
+  font-size: 0.9rem;
+  color: var(--ink-3);
+  cursor: pointer;
+  width: fit-content;
+}
+.advanced summary:hover { color: var(--ink-2); }
+.advanced__body {
+  margin-top: 0.85rem;
+  display: grid;
+  gap: 0.85rem;
+}
+.opt {
+  display: flex; gap: 0.7rem; align-items: flex-start;
+  cursor: pointer;
+}
+.opt input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 1.05rem; height: 1.05rem;
+  margin-top: 0.22rem;
+  flex: none;
+}
+.opt__text { font-size: 0.96rem; }
+.opt__text em {
+  display: block;
+  font-style: normal;
+  font-size: 0.86rem;
+  color: var(--ink-3);
+}
+
+/* ---------- processing ---------- */
+.work__status { font-size: 1rem; }
+.progress {
+  margin-top: 1rem;
+  height: 0.45rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 0.25rem;
+  overflow: hidden;
+}
+.progress__fill {
+  width: 0%;
+  height: 100%;
+  background: var(--accent);
+  transition: width .25s ease;
+}
+.work__pct {
+  margin-top: 0.55rem;
+  font-family: var(--mono);
+  font-size: 0.93rem;
+  color: var(--ink-2);
+  /* % on the left, 区間 pinned right — % digit growth can't push it around */
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+}
+.work__pct small { font-size: 0.79rem; color: var(--ink-3); }
+.work__step { font-size: 0.82rem; color: var(--ink-3); }
+.work__note {
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  color: var(--ink-3);
+}
+
+/* ---------- done ---------- */
+.done__title {
+  font-size: 1.07rem;
+  font-weight: 700;
+}
+.done__note {
+  margin-top: 0.7rem;
+  font-size: 0.86rem;
+  color: var(--ink-3);
+}
+
+/* ---------- error ---------- */
+.error__title { font-size: 1.07rem; font-weight: 700; color: var(--accent-2); }
+.error__msg { margin-top: 0.55rem; font-size: 0.93rem; color: var(--ink-2); }
+
+@media (max-width: 560px) {
+  .page { padding-top: 2rem; }
+  .head__title { font-size: 1.9rem; }
+  .actions .btn { flex: 1 1 auto; }
+  .player__time { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: .01ms !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
